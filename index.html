@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-  <title>Live Experience AR Camera</title>
+  <title>Luxury Hanami AR Camera - High Definition (Gyro Follow)</title>
   <style>
     body {
       margin: 0;
@@ -13,7 +13,6 @@
       background: #000;
       touch-action: none;
     }
-
     /* スマホカメラ映像を背景いっぱいに表示 */
     #webcam {
       position: absolute;
@@ -24,7 +23,6 @@
       object-fit: cover;
       z-index: 1;
     }
-
     /* AR演出・フレームを重ねるレイヤー */
     #ar-layer {
       position: absolute;
@@ -35,7 +33,6 @@
       z-index: 2;
       pointer-events: none;
     }
-
     /* 高解像度対応Canvas */
     #ar-canvas {
       position: absolute;
@@ -44,14 +41,13 @@
       width: 100vw;
       height: 100vh;
     }
-
-    /* グラスモーフィズム調ステータス表示 */
+    /* ラグジュアリーなステータス表示（グラスモーフィズム） */
     #info-overlay {
       position: absolute;
       top: 20px;
       left: 50%;
       transform: translateX(-50%);
-      background: rgba(15, 15, 15, 0.65);
+      background: rgba(15, 15, 15, 0.6);
       backdrop-filter: blur(18px);
       -webkit-backdrop-filter: blur(18px);
       color: #f7f3ed;
@@ -61,14 +57,26 @@
       font-size: 11px;
       letter-spacing: 0.1em;
       z-index: 10;
-      pointer-events: none;
+      pointer-events: auto; /* ボタンをクリック可能にする */
       text-align: center;
       box-shadow: 0 10px 30px rgba(0,0,0,0.6);
       white-space: nowrap;
     }
-    #status { font-weight: 600; color: #ff0055; text-shadow: 0 0 8px rgba(255, 0, 85, 0.6); }
+    #status { font-weight: 500; color: #e4c38b; }
 
-    /* シャッターボタン */
+    /* ジャイロ許可ボタンのスタイル */
+    #gyro-btn {
+      background: #e4c38b;
+      color: #000;
+      border: none;
+      padding: 4px 10px;
+      border-radius: 15px;
+      font-size: 10px;
+      cursor: pointer;
+      margin-left: 8px;
+    }
+
+    /* 最高級メタリック調のシャッターボタン */
     #shutter-container {
       position: absolute;
       bottom: 45px;
@@ -106,8 +114,8 @@
 
   <!-- ガイド・ステータス表示 -->
   <div id="info-overlay">
-    <div>LIVE STAGE: <span id="status">LIVE STREAMING</span></div>
-    <div style="margin-top: 3px; font-size: 8.5px; color: rgba(255,255,255,0.7); letter-spacing: 0.05em;">2本指で人物の拡大・縮小</div>
+    <div>AR EXPERIENCE: <span id="status">CONNECTING...</span><button id="gyro-btn" style="display:none;">追従を開始</button></div>
+    <div style="margin-top: 3px; font-size: 8.5px; color: rgba(255,255,255,0.55); letter-spacing: 0.05em;">2本指でフレームの拡大・縮小</div>
   </div>
 
   <!-- シャッターボタン -->
@@ -121,25 +129,32 @@
     const arCanvas = document.getElementById('ar-canvas');
     const ctx = arCanvas.getContext('2d');
     const shutterBtn = document.getElementById('shutter-btn');
+    const gyroBtn = document.getElementById('gyro-btn');
 
+    // --- 高解像度 (Retina) 対応のCanvasリサイズ処理 ---
     let dpr = window.devicePixelRatio || 1;
+    let logicalWidth, logicalHeight;
 
     function resizeCanvas() {
       dpr = window.devicePixelRatio || 1;
-      const width = window.innerWidth;
-      const height = window.innerHeight;
+      logicalWidth = window.innerWidth;
+      logicalHeight = window.innerHeight;
 
-      arCanvas.width = width * dpr;
-      arCanvas.height = height * dpr;
-      arCanvas.style.width = width + 'px';
-      arCanvas.style.height = height + 'px';
+      // 内部解像度をデバイスのピクセル比に合わせて高精度化
+      arCanvas.width = logicalWidth * dpr;
+      arCanvas.height = logicalHeight * dpr;
+      
+      // CSS表示サイズを画面全体に固定
+      arCanvas.style.width = logicalWidth + 'px';
+      arCanvas.style.height = logicalHeight + 'px';
 
+      // 描画スケールをスプレッド
       ctx.scale(dpr, dpr);
     }
     window.addEventListener('resize', resizeCanvas);
     resizeCanvas();
 
-    // カメラの起動
+    // カメラ（背面カメラ優先）の起動
     async function initCamera() {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
@@ -147,6 +162,7 @@
           audio: false
         });
         webcamEl.srcObject = stream;
+        statusEl.textContent = "READY";
       } catch (err) {
         try {
           const stream = await navigator.mediaDevices.getUserMedia({
@@ -154,6 +170,7 @@
             audio: false
           });
           webcamEl.srcObject = stream;
+          statusEl.textContent = "READY";
         } catch (e) {
           statusEl.textContent = "CAMERA ERROR";
           console.error(e);
@@ -162,7 +179,7 @@
     }
     initCamera();
 
-    // 画像（1.png または 1.jpg）を読み込み、白系背景を自動高精度透過処理
+    // 1.png を読み込み、白背景を自動高精度透過処理する
     let processedFrameImg = null;
     function loadAndProcessFrame() {
       const img = new Image();
@@ -176,11 +193,10 @@
 
         const imgData = tempCtx.getImageData(0, 0, tempCanvas.width, tempCanvas.height);
         const data = imgData.data;
-
-        // 白〜明るい背景をクリアに透過（RGBが閾値以上のピクセルを透過）
         for (let i = 0; i < data.length; i += 4) {
           const r = data[i], g = data[i+1], b = data[i+2];
-          if (r > 210 && g > 210 && b > 210) {
+          // 白に近い背景を高精度でクリアに透過
+          if (r > 200 && g > 200 && b > 200) {
             data[i+3] = 0; 
           }
         }
@@ -188,38 +204,109 @@
         processedFrameImg = tempCanvas;
       };
       img.onerror = () => {
-        // 1.png がない場合 1.jpg をフォールバック読み込み
-        if (!img.src.endsWith('1.jpg')) {
-          img.src = '1.jpg';
-        }
+        console.warn("1.png の読み込みに失敗しました。");
       };
       img.src = '1.png';
     }
     loadAndProcessFrame();
 
-    // --- ライブ演出・パーティクル設定 ---
+    // --- 【新規】ジャイロセンサー（デバイスの向き）による追従処理 ---
+    let gyroOffsetX = 0;
+    let gyroOffsetY = 0;
+    let initialAlpha = null;
+    let initialBeta = null;
+    let isGyroActive = false;
+
+    // ジャイロの感度設定（値を大きくするとカメラの動きに対してARが大きく動く）
+    const gyroSensitivity = 1.5; 
+
+    function handleOrientation(event) {
+      if (!isGyroActive) return;
+
+      let alpha = event.alpha; // Z軸周りの回転 (0 ~ 360)
+      let beta = event.beta;   // X軸周りの回転 (-180 ~ 180)
+
+      // 最初のフレームでの向きを基準点とする
+      if (initialAlpha === null) {
+        initialAlpha = alpha;
+        initialBeta = beta;
+        return;
+      }
+
+      // 基準点からの差分を計算
+      let deltaAlpha = alpha - initialAlpha;
+      let deltaBeta = beta - initialBeta;
+
+      // 360度の境界をまたぐ場合の補正
+      if (deltaAlpha > 180) deltaAlpha -= 360;
+      if (deltaAlpha < -180) deltaAlpha += 360;
+
+      // デバイスの向きに合わせて、ARの描画オフセット（ピクセル）を計算
+      // Alpha（左右の回転）をX軸の移動、Beta（前後の傾き）をY軸の移動に変換
+      gyroOffsetX = deltaAlpha * gyroSensitivity * (logicalWidth / 90); 
+      gyroOffsetY = deltaBeta * gyroSensitivity * (logicalHeight / 90);
+    }
+
+    // ジャイロセンサーの許可をリクエスト（iOS対策）
+    function requestGyroPermission() {
+      if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+        DeviceOrientationEvent.requestPermission()
+          .then(permissionState => {
+            if (permissionState === 'granted') {
+              window.addEventListener('deviceorientation', handleOrientation, true);
+              isGyroActive = true;
+              gyroBtn.style.display = 'none';
+              statusEl.textContent = "TRACKING";
+            } else {
+              statusEl.textContent = "PERM DENIED";
+            }
+          })
+          .catch(console.error);
+      } else {
+        // iOS以外やrequestPermissionがないブラウザ
+        window.addEventListener('deviceorientation', handleOrientation, true);
+        isGyroActive = true;
+        gyroBtn.style.display = 'none';
+        statusEl.textContent = "TRACKING";
+      }
+    }
+
+    // iOS 13+ ではユーザーアクション（クリック）経由で許可が必要
+    gyroBtn.addEventListener('click', requestGyroPermission);
+
+    // ページ読み込み時にiOSでなければ自動開始を試みる、iOSならボタンを表示
+    if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+      gyroBtn.style.display = 'inline-block';
+      statusEl.textContent = "NEED PERM";
+    } else {
+      // iOS以外
+      requestGyroPermission(); 
+    }
+
+
+    // --- ラグジュアリー・パーティクル（高精細な桜 ＆ ゴールドスパークル） ---
     const particles = [];
     
-    // 桜吹雪 (30枚)
-    for (let i = 0; i < 30; i++) {
+    // 桜の花びら (35枚)
+    for (let i = 0; i < 35; i++) {
       particles.push({
         type: 'petal',
         x: Math.random() * window.innerWidth,
         y: Math.random() * window.innerHeight,
-        size: Math.random() * 10 + 6,
-        speedY: Math.random() * 1.5 + 0.8,
+        size: Math.random() * 12 + 8,
+        speedY: Math.random() * 1.4 + 0.7,
         speedX: (Math.random() - 0.5) * 1.2,
         rotation: Math.random() * 360,
         rotSpeed: (Math.random() - 0.5) * 2.0,
         swaySpeed: Math.random() * 0.012 + 0.006,
-        swayAmp: Math.random() * 30 + 15,
+        swayAmp: Math.random() * 40 + 20,
         initialX: Math.random() * window.innerWidth,
-        opacity: Math.random() * 0.4 + 0.6,
+        opacity: Math.random() * 0.35 + 0.65,
         colorVariant: Math.random() > 0.4 ? '#ffb7c5' : '#ffd1dc'
       });
     }
 
-    // ライブ風ゴールドスパークル (25個)
+    // シャンパンゴールドのダイヤモンドスパークル (25個)
     for (let i = 0; i < 25; i++) {
       particles.push({
         type: 'sparkle',
@@ -228,19 +315,23 @@
         size: Math.random() * 3.5 + 1.2,
         speedY: Math.random() * 0.7 + 0.2,
         speedX: (Math.random() - 0.5) * 0.4,
-        opacity: Math.random() * 0.8 + 0.2
+        opacity: Math.random() * 0.8 + 0.2,
+        pulseSpeed: Math.random() * 0.08 + 0.03
       });
     }
 
     let frameScale = 1.0;
     let timeCount = 0;
 
-    function drawPetal(ctx, p) {
+    // 高品質な桜の花びら描画関数
+    function drawPetal(ctx, p, offsetX, offsetY) {
       ctx.save();
-      ctx.translate(p.x, p.y);
+      // ジャイロのオフセットを適用して描画位置をずらす
+      ctx.translate(p.x - offsetX, p.y - offsetY);
       ctx.rotate((p.rotation * Math.PI) / 180);
       ctx.globalAlpha = p.opacity;
 
+      // リッチなグラデーションと立体感
       const grad = ctx.createRadialGradient(0, -p.size * 0.2, 0, 0, 0, p.size * 1.2);
       grad.addColorStop(0, '#ffffff');
       grad.addColorStop(0.4, p.colorVariant);
@@ -252,94 +343,95 @@
       ctx.bezierCurveTo(p.size * 0.9, -p.size * 1.4, p.size * 1.2, p.size * 0.4, 0, p.size * 1.1);
       ctx.bezierCurveTo(-p.size * 1.2, p.size * 0.4, -p.size * 0.9, -p.size * 1.4, 0, -p.size);
       ctx.fill();
+
+      // 花びらの中心線（葉脈）の繊細な光沢
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.45)';
+      ctx.lineWidth = 0.8;
+      ctx.beginPath();
+      ctx.moveTo(0, -p.size * 0.7);
+      ctx.lineTo(0, p.size * 0.3);
+      ctx.stroke();
+
       ctx.restore();
     }
 
-    // メイン描画ループ
+    // メインの描画ループ
     function renderLoop() {
-      timeCount += 0.02;
-      const logicalWidth = window.innerWidth;
-      const logicalHeight = window.innerHeight;
-
+      timeCount += 0.016;
+      
+      // 論理サイズでクリア
       ctx.clearRect(0, 0, logicalWidth, logicalHeight);
 
-      // --- 1. ライブ会場風スポットライト演出 ---
-      ctx.save();
-      const spotGrad = ctx.createRadialGradient(
-        logicalWidth / 2, 0, 10,
-        logicalWidth / 2, 0, logicalHeight * 0.9
-      );
-      spotGrad.addColorStop(0, 'rgba(255, 0, 128, 0.25)');
-      spotGrad.addColorStop(0.5, 'rgba(0, 212, 255, 0.15)');
-      spotGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
-      ctx.fillStyle = spotGrad;
-      ctx.fillRect(0, 0, logicalWidth, logicalHeight);
-      ctx.restore();
+      // ジャイロによる追従効果の計算（少し滑らかに追従させるための簡易補間）
+      const currentOffsetX = isGyroActive ? gyroOffsetX : 0;
+      const currentOffsetY = isGyroActive ? gyroOffsetY : 0;
 
-      // --- 2. 男性の画像（1.png / 1.jpg）の持続表示 ＆ ライブ風躍動アニメーション ---
-      // 画面中央下寄りに配置
-      const floatOffsetY = Math.sin(timeCount * 2) * 8; // 上下バウンス
-      const baseW = Math.min(logicalWidth * 0.8, 450) * frameScale;
-      const baseH = baseW * 1.35;
-      const posX = (logicalWidth - baseW) / 2;
-      const posY = (logicalHeight - baseH) * 0.7 + floatOffsetY;
+      // --- A. ラグジュアリーなフレームの描画（優雅なフロートアニメーション付 ＆ ジャイロ追従） ---
+      const floatOffsetY = Math.sin(timeCount * 1.5) * 6;
+      const baseW = Math.min(logicalWidth * 0.75, 420) * frameScale;
+      const baseH = baseW * 1.414;
+      
+      // 本来の中心位置から、ジャイロのオフセット分だけ描画位置をずらす
+      const frameX = (logicalWidth - baseW) / 2 - currentOffsetX;
+      const frameY = (logicalHeight - baseH) / 2 + floatOffsetY - currentOffsetY;
 
       if (processedFrameImg) {
         ctx.save();
-        // ライブステージのバックライト光彩効果
-        ctx.shadowColor = 'rgba(255, 0, 128, 0.7)';
-        ctx.shadowBlur = 40;
-        ctx.drawImage(processedFrameImg, posX, posY, baseW, baseH);
+        // シャンパンゴールドの上品な外側グロウ
+        ctx.shadowColor = 'rgba(228, 195, 139, 0.65)';
+        ctx.shadowBlur = 35;
+        ctx.drawImage(processedFrameImg, frameX, frameY, baseW, baseH);
         ctx.restore();
+      } else {
+        ctx.strokeStyle = 'rgba(228, 195, 139, 0.85)';
+        ctx.lineWidth = 5;
+        ctx.strokeRect(frameX, frameY, baseW, baseH);
       }
 
-      // --- 3. パーティクル（桜吹雪・スパークル）描写 ---
+      // --- B. パーティクルの描写（ジャイロ追従を適用） ---
       particles.forEach((p, index) => {
         p.y += p.speedY;
         if (p.type === 'petal') {
           p.x = p.initialX + Math.sin(p.y * p.swaySpeed) * p.swayAmp;
           p.rotation += p.rotSpeed;
 
-          if (p.y > logicalHeight + 40) {
-            p.y = -40;
-            p.initialX = Math.random() * logicalWidth;
+          // ループ処理（画面外に出たら上に戻す）
+          // ジャイロオフセットを考慮した画面境界判定
+          if (p.y - currentOffsetY > logicalHeight + 40) {
+            p.y = -40 + currentOffsetY;
+            p.initialX = Math.random() * logicalWidth + currentOffsetX;
           }
-          drawPetal(ctx, p);
+          // パーティクルにもオフセットを適用して描画
+          drawPetal(ctx, p, currentOffsetX, currentOffsetY);
         } else if (p.type === 'sparkle') {
           p.x += p.speedX;
           const pulse = 0.5 + Math.sin(timeCount * 5 + index * 1.5) * 0.5;
+          const currentAlpha = Math.max(0, p.opacity * pulse);
 
-          if (p.y > logicalHeight + 20) {
-            p.y = -20;
-            p.x = Math.random() * logicalWidth;
+          if (p.y - currentOffsetY > logicalHeight + 20) {
+            p.y = -20 + currentOffsetY;
+            p.x = Math.random() * logicalWidth + currentOffsetX;
           }
 
           ctx.save();
-          ctx.globalAlpha = Math.max(0, p.opacity * pulse);
-          ctx.fillStyle = '#ffea9f';
+          // ジャイロのオフセットを適用
+          ctx.translate(p.x - currentOffsetX, p.y - currentOffsetY);
+          ctx.globalAlpha = currentAlpha;
+          ctx.fillStyle = '#ffea9f'; // 輝くシャンパンゴールド
           ctx.shadowColor = '#fff3bf';
-          ctx.shadowBlur = 10;
+          ctx.shadowBlur = 12;
           ctx.beginPath();
-          ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+          ctx.arc(0, 0, p.size, 0, Math.PI * 2);
           ctx.fill();
           ctx.restore();
         }
       });
 
-      // --- 4. ライブ風テキストバッジ表示 ---
-      ctx.save();
-      ctx.font = 'bold 12px sans-serif';
-      ctx.fillStyle = '#ffffff';
-      ctx.shadowColor = '#ff0055';
-      ctx.shadowBlur = 10;
-      ctx.fillText("● LIVE PERFORMANCE", 20, 35);
-      ctx.restore();
-
       requestAnimationFrame(renderLoop);
     }
     renderLoop();
 
-    // --- ピンチイン・ピンチアウト（2本指での拡大・縮小操作） ---
+    // 2本指によるピンチイン・ピンチアウト（拡大縮小）
     let initialDistance = null;
     let initialScale = 1.0;
 
@@ -360,7 +452,7 @@
           e.touches[0].clientY - e.touches[1].clientY
         );
         const factor = currentDistance / initialDistance;
-        frameScale = Math.max(0.4, Math.min(2.8, initialScale * factor));
+        frameScale = Math.max(0.4, Math.min(2.5, initialScale * factor));
       }
     }, { passive: true });
 
@@ -370,18 +462,17 @@
       }
     });
 
-    // --- シャッター機能（高精度な背景動画＋AR演出合成とダウンロード保存） ---
+    // シャッター機能（高解像度合成・保存）
     shutterBtn.addEventListener('click', () => {
+      // 保存用Canvasはデバイスのフル解像度（Retina等に対応した超高解像度）で書き出す
       const saveCanvas = document.createElement('canvas');
-      const logicalWidth = window.innerWidth;
-      const logicalHeight = window.innerHeight;
-
+      
       saveCanvas.width = logicalWidth * dpr;
       saveCanvas.height = logicalHeight * dpr;
       const saveCtx = saveCanvas.getContext('2d');
       saveCtx.scale(dpr, dpr);
 
-      // 1. カメラ映像を描画
+      // 1. カメラ背景映像を高画質で描画
       if (webcamEl.readyState === webcamEl.HAVE_ENOUGH_DATA) {
         const vRatio = webcamEl.videoWidth / webcamEl.videoHeight;
         const cRatio = logicalWidth / logicalHeight;
@@ -396,12 +487,12 @@
         saveCtx.drawImage(webcamEl, x, y, w, h);
       }
 
-      // 2. 現在表示中のライブAR演出を上書き合成
+      // 2. 現在のAR演出（ジャイロ追従が適用されたCanvasの状態）を正確に重ねて合成
       saveCtx.drawImage(arCanvas, 0, 0, logicalWidth, logicalHeight);
 
-      // 3. 画像としてダウンロード保存
+      // 3. 超高画質PNGとしてダウンロード保存
       const link = document.createElement('a');
-      link.download = 'live_ar_photo_' + Date.now() + '.png';
+      link.download = 'luxury_hanami_gyro_' + Date.now() + '.png';
       link.href = saveCanvas.toDataURL('image/png', 1.0);
       link.click();
     });
