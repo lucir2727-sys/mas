@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>Live Experience AR Camera</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif;
+      background: #000;
+      touch-action: none;
+    }
+
+    /* スマホカメラ映像を背景いっぱいに表示 */
+    #webcam {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      object-fit: cover;
+      z-index: 1;
+    }
+
+    /* AR演出・フレームを重ねるレイヤー */
+    #ar-layer {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      z-index: 2;
+      pointer-events: none;
+    }
+
+    /* 高解像度対応Canvas */
+    #ar-canvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+    }
+
+    /* グラスモーフィズム調ステータス表示 */
+    #info-overlay {
+      position: absolute;
+      top: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(15, 15, 15, 0.65);
+      backdrop-filter: blur(18px);
+      -webkit-backdrop-filter: blur(18px);
+      color: #f7f3ed;
+      padding: 8px 22px;
+      border-radius: 30px;
+      border: 1px solid rgba(228, 195, 139, 0.4);
+      font-size: 11px;
+      letter-spacing: 0.1em;
+      z-index: 10;
+      pointer-events: none;
+      text-align: center;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.6);
+      white-space: nowrap;
+    }
+    #status { font-weight: 600; color: #ff0055; text-shadow: 0 0 8px rgba(255, 0, 85, 0.6); }
+
+    /* シャッターボタン */
+    #shutter-container {
+      position: absolute;
+      bottom: 45px;
+      left: 0;
+      width: 100%;
+      text-align: center;
+      z-index: 10;
+    }
+    #shutter-btn {
+      width: 78px;
+      height: 78px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, #ffffff 0%, #d8c4b6 50%, #b8977e 100%);
+      border: 3px solid rgba(228, 195, 139, 0.95);
+      cursor: pointer;
+      box-shadow: 0 12px 35px rgba(0,0,0,0.7), inset 0 2px 6px rgba(255,255,255,0.95);
+      transition: transform 0.15s cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 0.15s ease;
+      outline: none;
+    }
+    #shutter-btn:active {
+      transform: scale(0.92);
+      box-shadow: 0 5px 15px rgba(0,0,0,0.5), inset 0 1px 3px rgba(0,0,0,0.4);
+    }
+  </style>
+</head>
+<body>
+
+  <!-- スマホのカメラ映像 -->
+  <video id="webcam" autoplay playsinline muted></video>
+
+  <!-- ARレイヤー -->
+  <div id="ar-layer">
+    <canvas id="ar-canvas"></canvas>
+  </div>
+
+  <!-- ガイド・ステータス表示 -->
+  <div id="info-overlay">
+    <div>LIVE STAGE: <span id="status">LIVE STREAMING</span></div>
+    <div style="margin-top: 3px; font-size: 8.5px; color: rgba(255,255,255,0.7); letter-spacing: 0.05em;">2本指で人物の拡大・縮小</div>
+  </div>
+
+  <!-- シャッターボタン -->
+  <div id="shutter-container">
+    <button id="shutter-btn" title="Capture"></button>
+  </div>
+
+  <script>
+    const webcamEl = document.getElementById('webcam');
+    const statusEl = document.getElementById('status');
+    const arCanvas = document.getElementById('ar-canvas');
+    const ctx = arCanvas.getContext('2d');
+    const shutterBtn = document.getElementById('shutter-btn');
+
+    let dpr = window.devicePixelRatio || 1;
+
+    function resizeCanvas() {
+      dpr = window.devicePixelRatio || 1;
+      const width = window.innerWidth;
+      const height = window.innerHeight;
+
+      arCanvas.width = width * dpr;
+      arCanvas.height = height * dpr;
+      arCanvas.style.width = width + 'px';
+      arCanvas.style.height = height + 'px';
+
+      ctx.scale(dpr, dpr);
+    }
+    window.addEventListener('resize', resizeCanvas);
+    resizeCanvas();
+
+    // カメラの起動
+    async function initCamera() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { exact: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+          audio: false
+        });
+        webcamEl.srcObject = stream;
+      } catch (err) {
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({
+            video: true,
+            audio: false
+          });
+          webcamEl.srcObject = stream;
+        } catch (e) {
+          statusEl.textContent = "CAMERA ERROR";
+          console.error(e);
+        }
+      }
+    }
+    initCamera();
+
+    // 画像（1.png または 1.jpg）を読み込み、白系背景を自動高精度透過処理
+    let processedFrameImg = null;
+    function loadAndProcessFrame() {
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      img.onload = () => {
+        const tempCanvas = document.createElement('canvas');
+        tempCanvas.width = img.naturalWidth || img.width;
+        tempCanvas.height = img.naturalHeight || img.height;
+        const tempCtx = tempCanvas.getContext('2d');
+        tempCtx.drawImage(img, 0, 0);
+
+        const imgData = tempCtx.getImageData(0, 0, tempCanvas.width, tempCanvas.height);
+        const data = imgData.data;
+
+        // 白〜明るい背景をクリアに透過（RGBが閾値以上のピクセルを透過）
+        for (let i = 0; i < data.length; i += 4) {
+          const r = data[i], g = data[i+1], b = data[i+2];
+          if (r > 210 && g > 210 && b > 210) {
+            data[i+3] = 0; 
+          }
+        }
+        tempCtx.putImageData(imgData, 0, 0);
+        processedFrameImg = tempCanvas;
+      };
+      img.onerror = () => {
+        // 1.png がない場合 1.jpg をフォールバック読み込み
+        if (!img.src.endsWith('1.jpg')) {
+          img.src = '1.jpg';
+        }
+      };
+      img.src = '1.png';
+    }
+    loadAndProcessFrame();
+
+    // --- ライブ演出・パーティクル設定 ---
+    const particles = [];
+    
+    // 桜吹雪 (30枚)
+    for (let i = 0; i < 30; i++) {
+      particles.push({
+        type: 'petal',
+        x: Math.random() * window.innerWidth,
+        y: Math.random() * window.innerHeight,
+        size: Math.random() * 10 + 6,
+        speedY: Math.random() * 1.5 + 0.8,
+        speedX: (Math.random() - 0.5) * 1.2,
+        rotation: Math.random() * 360,
+        rotSpeed: (Math.random() - 0.5) * 2.0,
+        swaySpeed: Math.random() * 0.012 + 0.006,
+        swayAmp: Math.random() * 30 + 15,
+        initialX: Math.random() * window.innerWidth,
+        opacity: Math.random() * 0.4 + 0.6,
+        colorVariant: Math.random() > 0.4 ? '#ffb7c5' : '#ffd1dc'
+      });
+    }
+
+    // ライブ風ゴールドスパークル (25個)
+    for (let i = 0; i < 25; i++) {
+      particles.push({
+        type: 'sparkle',
+        x: Math.random() * window.innerWidth,
+        y: Math.random() * window.innerHeight,
+        size: Math.random() * 3.5 + 1.2,
+        speedY: Math.random() * 0.7 + 0.2,
+        speedX: (Math.random() - 0.5) * 0.4,
+        opacity: Math.random() * 0.8 + 0.2
+      });
+    }
+
+    let frameScale = 1.0;
+    let timeCount = 0;
+
+    function drawPetal(ctx, p) {
+      ctx.save();
+      ctx.translate(p.x, p.y);
+      ctx.rotate((p.rotation * Math.PI) / 180);
+      ctx.globalAlpha = p.opacity;
+
+      const grad = ctx.createRadialGradient(0, -p.size * 0.2, 0, 0, 0, p.size * 1.2);
+      grad.addColorStop(0, '#ffffff');
+      grad.addColorStop(0.4, p.colorVariant);
+      grad.addColorStop(1, '#ff7b93');
+
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.moveTo(0, -p.size);
+      ctx.bezierCurveTo(p.size * 0.9, -p.size * 1.4, p.size * 1.2, p.size * 0.4, 0, p.size * 1.1);
+      ctx.bezierCurveTo(-p.size * 1.2, p.size * 0.4, -p.size * 0.9, -p.size * 1.4, 0, -p.size);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // メイン描画ループ
+    function renderLoop() {
+      timeCount += 0.02;
+      const logicalWidth = window.innerWidth;
+      const logicalHeight = window.innerHeight;
+
+      ctx.clearRect(0, 0, logicalWidth, logicalHeight);
+
+      // --- 1. ライブ会場風スポットライト演出 ---
+      ctx.save();
+      const spotGrad = ctx.createRadialGradient(
+        logicalWidth / 2, 0, 10,
+        logicalWidth / 2, 0, logicalHeight * 0.9
+      );
+      spotGrad.addColorStop(0, 'rgba(255, 0, 128, 0.25)');
+      spotGrad.addColorStop(0.5, 'rgba(0, 212, 255, 0.15)');
+      spotGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+      ctx.fillStyle = spotGrad;
+      ctx.fillRect(0, 0, logicalWidth, logicalHeight);
+      ctx.restore();
+
+      // --- 2. 男性の画像（1.png / 1.jpg）の持続表示 ＆ ライブ風躍動アニメーション ---
+      // 画面中央下寄りに配置
+      const floatOffsetY = Math.sin(timeCount * 2) * 8; // 上下バウンス
+      const baseW = Math.min(logicalWidth * 0.8, 450) * frameScale;
+      const baseH = baseW * 1.35;
+      const posX = (logicalWidth - baseW) / 2;
+      const posY = (logicalHeight - baseH) * 0.7 + floatOffsetY;
+
+      if (processedFrameImg) {
+        ctx.save();
+        // ライブステージのバックライト光彩効果
+        ctx.shadowColor = 'rgba(255, 0, 128, 0.7)';
+        ctx.shadowBlur = 40;
+        ctx.drawImage(processedFrameImg, posX, posY, baseW, baseH);
+        ctx.restore();
+      }
+
+      // --- 3. パーティクル（桜吹雪・スパークル）描写 ---
+      particles.forEach((p, index) => {
+        p.y += p.speedY;
+        if (p.type === 'petal') {
+          p.x = p.initialX + Math.sin(p.y * p.swaySpeed) * p.swayAmp;
+          p.rotation += p.rotSpeed;
+
+          if (p.y > logicalHeight + 40) {
+            p.y = -40;
+            p.initialX = Math.random() * logicalWidth;
+          }
+          drawPetal(ctx, p);
+        } else if (p.type === 'sparkle') {
+          p.x += p.speedX;
+          const pulse = 0.5 + Math.sin(timeCount * 5 + index * 1.5) * 0.5;
+
+          if (p.y > logicalHeight + 20) {
+            p.y = -20;
+            p.x = Math.random() * logicalWidth;
+          }
+
+          ctx.save();
+          ctx.globalAlpha = Math.max(0, p.opacity * pulse);
+          ctx.fillStyle = '#ffea9f';
+          ctx.shadowColor = '#fff3bf';
+          ctx.shadowBlur = 10;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.restore();
+        }
+      });
+
+      // --- 4. ライブ風テキストバッジ表示 ---
+      ctx.save();
+      ctx.font = 'bold 12px sans-serif';
+      ctx.fillStyle = '#ffffff';
+      ctx.shadowColor = '#ff0055';
+      ctx.shadowBlur = 10;
+      ctx.fillText("● LIVE PERFORMANCE", 20, 35);
+      ctx.restore();
+
+      requestAnimationFrame(renderLoop);
+    }
+    renderLoop();
+
+    // --- ピンチイン・ピンチアウト（2本指での拡大・縮小操作） ---
+    let initialDistance = null;
+    let initialScale = 1.0;
+
+    window.addEventListener('touchstart', (e) => {
+      if (e.touches.length === 2) {
+        initialDistance = Math.hypot(
+          e.touches[0].clientX - e.touches[1].clientX,
+          e.touches[0].clientY - e.touches[1].clientY
+        );
+        initialScale = frameScale;
+      }
+    }, { passive: true });
+
+    window.addEventListener('touchmove', (e) => {
+      if (e.touches.length === 2 && initialDistance !== null && initialDistance > 0) {
+        const currentDistance = Math.hypot(
+          e.touches[0].clientX - e.touches[1].clientX,
+          e.touches[0].clientY - e.touches[1].clientY
+        );
+        const factor = currentDistance / initialDistance;
+        frameScale = Math.max(0.4, Math.min(2.8, initialScale * factor));
+      }
+    }, { passive: true });
+
+    window.addEventListener('touchend', (e) => {
+      if (e.touches.length < 2) {
+        initialDistance = null;
+      }
+    });
+
+    // --- シャッター機能（高精度な背景動画＋AR演出合成とダウンロード保存） ---
+    shutterBtn.addEventListener('click', () => {
+      const saveCanvas = document.createElement('canvas');
+      const logicalWidth = window.innerWidth;
+      const logicalHeight = window.innerHeight;
+
+      saveCanvas.width = logicalWidth * dpr;
+      saveCanvas.height = logicalHeight * dpr;
+      const saveCtx = saveCanvas.getContext('2d');
+      saveCtx.scale(dpr, dpr);
+
+      // 1. カメラ映像を描画
+      if (webcamEl.readyState === webcamEl.HAVE_ENOUGH_DATA) {
+        const vRatio = webcamEl.videoWidth / webcamEl.videoHeight;
+        const cRatio = logicalWidth / logicalHeight;
+        let w = logicalWidth, h = logicalHeight, x = 0, y = 0;
+        if (vRatio > cRatio) {
+          w = logicalHeight * vRatio;
+          x = (logicalWidth - w) / 2;
+        } else {
+          h = logicalWidth / vRatio;
+          y = (logicalHeight - h) / 2;
+        }
+        saveCtx.drawImage(webcamEl, x, y, w, h);
+      }
+
+      // 2. 現在表示中のライブAR演出を上書き合成
+      saveCtx.drawImage(arCanvas, 0, 0, logicalWidth, logicalHeight);
+
+      // 3. 画像としてダウンロード保存
+      const link = document.createElement('a');
+      link.download = 'live_ar_photo_' + Date.now() + '.png';
+      link.href = saveCanvas.toDataURL('image/png', 1.0);
+      link.click();
+    });
+  </script>
+</body>
+</html>
